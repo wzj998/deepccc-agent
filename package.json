@@ -3,6 +3,21 @@
   "version": "0.1.0",
   "description": "A lightweight DeepSeek-optimized coding agent with OpenAI-compatible model support.",
   "license": "Apache-2.0",
+  "keywords": [
+    "agent",
+    "deepseek",
+    "coding-agent",
+    "openai-compatible",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wzj998/deepccc-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wzj998/deepccc-agent/issues"
+  },
+  "homepage": "https://github.com/wzj998/deepccc-agent#readme",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
