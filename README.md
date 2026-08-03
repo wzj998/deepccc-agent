@@ -132,6 +132,61 @@ deepccc --effort high
 
 可选值：`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（留空则不传 `reasoning_effort` 请求字段）。
 
+## 权限机制
+
+`deepccc` 内置轻量权限机制，对标主流 agent 的审批体验：**只拦截有副作用的操作**（`run_command` 与文件写操作），只读工具（`read_file` / `list_dir` / `search_code`）永不拦截，常规文件编辑默认放行不打断工作流。
+
+默认模式（`ask`）下，只有**命中内置危险命令库**的高危命令才会询问，例如：
+
+- `rm -rf` / `rm -fr` / `del /s` / `rmdir /s` 等强制删除
+- `git push --force` / `git reset --hard` / `git clean -f` 等破坏性 git 操作
+- `format` / `diskpart` / `mkfs` / `dd of=设备` 等磁盘操作
+- `shutdown` / `reboot` 等系统操作
+- `drop table` / `truncate table` 等数据库操作
+- `npm publish` / `npm uninstall -g` / `pip uninstall` 等发布与全局卸载
+
+交互模式下，高危命令会暂停并询问：
+
+```text
+⚠️  高危操作需要确认
+运行命令: rm -rf node_modules
+允许一次(y) / 永远允许(a) / 拒绝(n) / 本会话允许所有(g) >
+```
+
+- `y` — 允许本次
+- `a` — 永远允许，写入 `~/.deepccc/allow.json`
+- `n` — 拒绝本次
+- `g` — 本会话内全部放行（不落盘）
+
+### 规则文件 `~/.deepccc/allow.json`
+
+规则格式为 `"<工具>:<模式>"`（`*` 为通配符，`*:` 匹配所有工具），支持相对/绝对路径：
+
+```json
+{
+  "allow": [
+    "run_command:git status*",
+    "run_command:git push --force origin release*"
+  ],
+  "deny": [
+    "edit_file:node_modules/**",
+    "run_command:npm publish*"
+  ]
+}
+```
+
+`deny` 命中永远拒绝，`allow` 命中永远放行（可覆盖高危判定）。文件变更后自动热加载，无需重启。
+
+### 非交互模式与 bypass
+
+`--stream-json` 或程序化调用（无终端可交互）时，高危命令**安全默认拒绝**。需要全自动场景可显式传入：
+
+```bash
+deepccc --dangerously-bypass-permissions
+```
+
+该参数与 `ChatSession` 的 `permissionMode: "bypass"` 等价，也是 chatccc 集成 deepccc 时使用的模式（对齐 chatccc 调用 Claude Code / Codex 的 bypass 方式）。
+
 ## 终端过程区块
 
 交互模式下，每轮回复渲染为固定"过程区块"：状态行（生成中/完成/已停止/异常结束）+ 折叠工具行 + 原地更新正文，不滚屏刷 JSON。生成中有心跳点号动画；完成/停止/异常后区块定型留在屏幕上。
@@ -168,9 +223,12 @@ echo "运行测试并解释失败原因" | deepccc --stream-json
 
 ## 在 ChatCCC 中使用
 
-ChatCCC 公有仓库：
+**ChatCCC 已内置 deepccc**：ChatCCC 的 "CCC Agent" 工具直接内嵌 deepccc 的代码（`src/builtin/`），以 `permissionMode: "bypass"` 全自动运行，无需单独安装或配置本仓库。
 
-https://github.com/wzj998/ChatCCC
+ChatCCC 是一个把 Claude Code / Codex / Cursor / CCC Agent 聚合到飞书/企微等 IM 消息通道的本地机器人框架，提供会话管理、过程卡片、用量统计与隐私替换等能力。
+
+- 公有仓库：https://github.com/wzj998/ChatCCC
+- npm 包：`chatccc`（`npm install -g chatccc`）
 
 在 ChatCCC 会话里可以使用隐藏指令创建 `deepccc` Agent 会话：
 
@@ -179,6 +237,8 @@ https://github.com/wzj998/ChatCCC
 ```
 
 这种方式适合已经在 ChatCCC 里协作的场景：ChatCCC 负责会话入口和消息通道，`deepccc` 负责本地编程 Agent 能力，包括读取项目提示词、运行命令、编辑文件和输出流式结果。
+
+如果希望让 ChatCCC 使用本仓库（deepccc-agent）最新的独立版本能力，也可以把 `src/builtin/` 与本仓库 `src/` 同步后构建。
 
 ## 项目提示词自动注入
 

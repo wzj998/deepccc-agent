@@ -20,6 +20,7 @@ import {
   defaultBuiltinSessionId,
 } from "./context.js";
 import { createBuiltinFileTools } from "./file-tools.js";
+import { PermissionGate, type PermissionMode, type PermissionResolver } from "./permissions.js";
 import { buildDefaultSkillDirs, buildSkillsIndexPrompt, scanSkillsDirs } from "./skills.js";
 import { applyPrivacy, applyPrivacyToJson } from "./privacy.js";
 
@@ -131,6 +132,16 @@ export interface ChatSessionOptions {
    * Defaults to ~/.codex/skills, ~/.agents/skills, <cwd>/.codex/skills.
    */
   skillsDirs?: string[];
+  /**
+   * 权限模式：ask（默认，高危命令询问）/ bypass（全部放行，等价
+   * --dangerously-bypass-permissions；chatccc 等无终端环境集成时使用）。
+   */
+  permissionMode?: PermissionMode;
+  /**
+   * ask 模式下高危操作的交互确认回调；缺省时非交互环境（JSONL / 程序化
+   * 调用）自动拒绝高危命令，常规文件操作与低危命令不受影响。
+   */
+  permissionResolver?: PermissionResolver;
 }
 
 /**
@@ -164,6 +175,7 @@ export class ChatSession {
   private context: BuiltinContextManager;
   private maxSteps?: number;
   private effort: string;
+  private permissionGate: PermissionGate;
 
   constructor(
     overrides: ChatSessionConfig = {},
@@ -215,6 +227,10 @@ export class ChatSession {
       compactAtTokens: options.compactAtTokens,
       keepRecentMessages: options.keepRecentMessages,
     });
+    this.permissionGate = new PermissionGate(
+      options.permissionMode ?? "ask",
+      options.permissionResolver,
+    );
   }
 
   async *chat(
@@ -255,7 +271,7 @@ export class ChatSession {
         model: this.model,
         system: this.systemPrompt,
         messages: this.context.buildModelMessages() as any,
-        tools: createBuiltinFileTools(this.cwd),
+        tools: createBuiltinFileTools(this.cwd, { permissionGate: this.permissionGate }),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
         // DeepSeek OpenAI 兼容接口：providerOptions.deepseek.reasoningEffort

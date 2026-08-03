@@ -25,6 +25,7 @@ import { TerminalProgressRenderer } from "./progress/terminal-renderer.js";
 import { progressView, type ProgressView } from "./progress/view.js";
 import { defaultLogDir, setupFileLogging } from "./file-log.js";
 import type { ChatEvent, ChatSessionConfig, ChatSessionOptions } from "./index.js";
+import type { PermissionRequest, PermissionResolver } from "./permissions.js";
 
 interface ParsedArgs {
   config: ChatSessionConfig;
@@ -103,6 +104,9 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
       i++;
     } else if (arg === "--plain") {
       plain = true;
+    } else if (arg === "--dangerously-bypass-permissions") {
+      // 仅保留一个 bypass 入口（对齐 chatccc 调 claude/codex 的 bypass 模式）
+      options.permissionMode = "bypass";
     } else if (arg === "--help" || arg === "-h") {
       help = true;
     }
@@ -137,7 +141,15 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "  --stream-json        One-shot mode: write JSONL events to stdout",
     "  --prompt <text>      Prompt text for --stream-json",
     "  --plain              Force plain streaming output (no progress block renderer)",
+    "  --dangerously-bypass-permissions  Skip all permission prompts (aligns with chatccc's bypass mode)",
     "  --help, -h           Show help",
+    "",
+    "Permissions:",
+    "  Default mode asks before high-risk commands (rm -rf, git push --force, ...).",
+    "  Answer y = allow once, a = allow always (saved to ~/.deepccc/allow.json),",
+    "  n = deny, g = allow all for this session. Read-only tools and normal file",
+    "  edits never prompt. In non-interactive mode (--stream-json) high-risk",
+    "  commands are denied unless --dangerously-bypass-permissions is passed.",
     "",
     "Default config source:",
     "  ~/.deepccc/config.json, DEEPCCC_* environment variables, or DEEPSEEK_* aliases",
@@ -368,6 +380,37 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     muteConsoleLogToFile(setupFileLogging(defaultLogDir(), "index").logPath);
   }
 
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: `${C.green}>${C.reset} `,
+  });
+
+  // 权限交互：暂停过程区块渲染（恢复光标）→ readline 提问 → 恢复渲染。
+  // activeRenderer/activeView 由每轮 line 处理器维护，resolver 只在工具
+  // 执行期间被调用，此时当前轮的区块正处于运行中。
+  let activeRenderer: TerminalProgressRenderer | null = null;
+  let activeView: ProgressView | null = null;
+  const permissionResolver: PermissionResolver = async (request: PermissionRequest) => {
+    const renderer = activeRenderer;
+    const view = activeView;
+    if (renderer) renderer.dispose();
+    process.stdout.write(`\n${C.yellow}⚠️  高危操作需要确认${C.reset}\n`);
+    process.stdout.write(`${C.dim}${request.detail}${C.reset}\n`);
+    const answer = await new Promise<string>((resolve) => {
+      rl.question(
+        `${C.green}允许一次(y) / 永远允许(a) / 拒绝(n) / 本会话允许所有(g) >${C.reset} `,
+        resolve,
+      );
+    });
+    if (renderer && view) renderer.begin(view);
+    const v = answer.trim().toLowerCase();
+    if (v === "y") return "allow";
+    if (v === "a") return "allow-always";
+    if (v === "g") return "allow-session";
+    return "deny";
+  };
+
   let session: InstanceType<typeof ChatSession>;
   try {
     session = new ChatSession(args.config, {
@@ -375,17 +418,12 @@ async function runRepl(args: ParsedArgs): Promise<void> {
       cwd,
       persist: true,
       sessionId: resolvedSession.sessionId,
+      permissionResolver,
     });
   } catch (err) {
     console.error(`${C.yellow}${(err as Error).message}${C.reset}`);
     process.exit(1);
   }
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: `${C.green}>${C.reset} `,
-  });
 
   let currentAbort: AbortController | null = null;
   const ctrlCState = createCtrlCState();
@@ -429,6 +467,8 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     let view: ProgressView | null = null;
     if (renderer) {
       view = progressView({ headerTitle: "生成中..." });
+      activeRenderer = renderer;
+      activeView = view;
       // 先回行首换行再 begin：让过程区块从输入行下方开始，避免首帧 \r\x1b[2K
       // 清掉用户刚输入的问题行（历史文本不被刷掉）。\r\n 兼容 readline
       // 行提交后光标仍停在输入行行尾的情况。
@@ -475,6 +515,8 @@ async function runRepl(args: ParsedArgs): Promise<void> {
       }
       console.error(`\n${C.yellow}[error] ${(err as Error).message}${C.reset}`);
     } finally {
+      activeRenderer = null;
+      activeView = null;
       if (renderer && view && !rendererEnded) {
         // 定型终态区块（完成/已停止/异常结束）留在屏幕上，恢复光标
         renderer.end(view);
