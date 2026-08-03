@@ -73,6 +73,23 @@ $env:DEEPCCC_MODEL="deepseek-v4-pro"
 }
 ```
 
+## 隐私替换
+
+`deepccc` 支持在展示层（终端输出 / JSONL 流式输出）把敏感信息替换为掩码值，防止用户名、路径等隐私内容出现在终端或管道输出里。创建 `~/.deepccc/privacy.json` 即可启用：
+
+```json
+{
+  "enabled": true,
+  "rules": {
+    "weizhangjian": "wzj"
+  }
+}
+```
+
+- `rules` 的键按字面量替换（`split`/`join`，非正则），可配置多条规则；不配置 `enabled`/`rules` 字段时，扁平写法 `{ "weizhangjian": "wzj" }` 也兼容（等效 `enabled: true`）。
+- 替换作用于模型回复文本、工具调用参数与结果、错误消息中的字符串字段；持久化上下文仍保存原文，替换仅影响展示层。
+- 文件变更后自动热加载，无需重启进程。
+
 ## 命令行交互
 
 在当前目录启动一个交互式 Agent：

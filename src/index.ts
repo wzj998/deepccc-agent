@@ -21,6 +21,7 @@ import {
 } from "./context.js";
 import { createBuiltinFileTools } from "./file-tools.js";
 import { buildDefaultSkillDirs, buildSkillsIndexPrompt, scanSkillsDirs } from "./skills.js";
+import { applyPrivacy, applyPrivacyToJson } from "./privacy.js";
 
 // ---------------------------------------------------------------------------
 // 系统提示词 — 编译期冻结常量（DeepCCC 英文品牌）
@@ -223,6 +224,7 @@ export class ChatSession {
     this.context.appendMessage({ role: "user", content: userMessage });
 
     let fullText = "";
+    let safeAccumulated = "";
     let rawLog: RawStreamLogHandle | null = null;
     let completed = false;
 
@@ -266,14 +268,18 @@ export class ChatSession {
         rawLog?.writeLine(safeRawStreamJson(part));
         if (part.type === "text-delta") {
           fullText += part.text;
-          yield { type: "text", text: part.text, accumulated: fullText };
+          // 隐私替换只在展示层：safeAccumulated 供事件消费者（终端/JSONL）使用，
+          // fullText 原文用于持久化上下文，避免替换结果回流污染上下文。
+          const safeText = applyPrivacy(part.text);
+          safeAccumulated += safeText;
+          yield { type: "text", text: safeText, accumulated: safeAccumulated };
         } else if (part.type === "tool-call") {
           toolContext.push(`tool_call ${part.toolName}: ${safeJson(part.input)}`);
           yield {
             type: "tool_use",
             id: part.toolCallId,
             name: part.toolName,
-            input: part.input,
+            input: applyPrivacyToJson(part.input),
           };
         } else if (part.type === "tool-result") {
           toolContext.push(`tool_result ${part.toolName}: ${truncateToolContext(safeJson(part.output))}`);
@@ -281,7 +287,7 @@ export class ChatSession {
             type: "tool_result",
             tool_use_id: part.toolCallId,
             name: part.toolName,
-            content: part.output,
+            content: applyPrivacyToJson(part.output),
             is_error: false,
           };
         } else if (part.type === "tool-error") {
@@ -291,12 +297,12 @@ export class ChatSession {
             type: "tool_result",
             tool_use_id: part.toolCallId,
             name: part.toolName,
-            content: message,
+            content: applyPrivacy(message),
             is_error: true,
           };
         } else if (part.type === "error") {
           const message = errorMessage(part.error);
-          yield { type: "error", message };
+          yield { type: "error", message: applyPrivacy(message) };
           throw new Error(message);
         }
       }
@@ -306,7 +312,7 @@ export class ChatSession {
         ? `${fullText}\n\n[Tool transcript]\n${toolContext.join("\n")}`
         : fullText;
       this.context.appendMessage({ role: "assistant", content: persistedText });
-      yield { type: "done", text: fullText };
+      yield { type: "done", text: safeAccumulated };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if ((err as Error).name === "AbortError" || signal?.aborted) {
@@ -314,10 +320,10 @@ export class ChatSession {
         if (fullText) {
           this.context.appendMessage({ role: "assistant", content: `${fullText}\n[interrupted]` });
         }
-        yield { type: "done", text: fullText };
+        yield { type: "done", text: safeAccumulated };
         return;
       }
-      yield { type: "error", message };
+      yield { type: "error", message: applyPrivacy(message) };
       throw err;
     } finally {
       const rawLogConfig = appConfig.rawStreamLogs;
