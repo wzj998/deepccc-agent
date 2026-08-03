@@ -54,6 +54,7 @@ $env:DEEPCCC_MODEL="deepseek-v4-pro"
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
 - `DEEPSEEK_MODEL`
+- `DEEPSEEK_EFFORT`
 
 也可以创建 `~/.deepccc/config.json`：
 
@@ -62,6 +63,7 @@ $env:DEEPCCC_MODEL="deepseek-v4-pro"
   "apiKey": "sk-...",
   "baseURL": "https://api.deepseek.com/v1",
   "model": "deepseek-v4-pro",
+  "effort": "",
   "rawStreamLogs": {
     "enabled": false,
     "maxBytesPerTurn": 1048576,
@@ -104,6 +106,24 @@ deepccc --max-steps 20
 ```
 
 默认情况下，`deepccc` 不设置固定步数上限，会让模型自然完成工具循环。
+
+设置推理强度（reasoning effort）：
+
+```bash
+deepccc --effort high
+```
+
+可选值：`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（留空则不传 `reasoning_effort` 请求字段）。
+
+## 终端过程区块
+
+交互模式下，每轮回复渲染为固定"过程区块"：状态行（生成中/完成/已停止/异常结束）+ 折叠工具行 + 原地更新正文，不滚屏刷 JSON。生成中有心跳点号动画；完成/停止/异常后区块定型留在屏幕上。
+
+如果终端渲染出现异常，可以强制回退为纯文本流式输出：
+
+```bash
+deepccc --plain
+```
 
 ## JSONL 流式输出
 
@@ -153,6 +173,14 @@ https://github.com/wzj998/ChatCCC
 - `CLAUDE.local.md`
 
 这些内容会放在固定系统提示词之后，作为项目指导使用。
+
+## Codex-style Skills 支持
+
+`deepccc` 会扫描以下目录，把本机的 Codex 目录式 skill（`<name>/SKILL.md`，含 `name` + `description` frontmatter）索引注入系统提示词；模型在任务匹配时先用 `read_file` 读取 `SKILL.md` 全文再执行：
+
+- `~/.codex/skills`
+- `~/.agents/skills`
+- `<cwd>/.codex/skills`（项目级，优先级最高）
 
 ## 内置工具
 

@@ -1,15 +1,29 @@
 /**
- * DeepCCC terminal REPL and JSONL streaming entrypoint.
+ * DeepCCC terminal REPL and JSONL streaming entrypoint — 同步自 ChatCCC
+ *
+ * Usage:
+ *   node bin/deepccc.mjs
+ *   node bin/deepccc.mjs --model deepseek-v4-pro
+ *   node bin/deepccc.mjs --stream-json --prompt "hello"
+ *
+ * 交互模式（TTY）下，单轮回复渲染为固定"过程区块"：状态行 + 折叠工具行 +
+ * 原地更新正文，不再滚屏刷 JSON；完成/停止/异常后定型留在屏幕上。
+ * 非 TTY（管道/CI）或 --plain 回退为纯文本流式输出；--stream-json 机器接口不变。
  */
 
 import * as readline from "node:readline";
 import * as process from "node:process";
+import { appendFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { listBuiltinContextSessions } from "./context.js";
 import { resolveBuiltinSession, type BuiltinResumeRequest } from "./session-select.js";
 import { createCtrlCState } from "./sigint.js";
+import { reduceProgress } from "./progress/reducer.js";
+import { TerminalProgressRenderer } from "./progress/terminal-renderer.js";
+import { progressView, type ProgressView } from "./progress/view.js";
+import { defaultLogDir, setupFileLogging } from "./file-log.js";
 import type { ChatEvent, ChatSessionConfig, ChatSessionOptions } from "./index.js";
 
 interface ParsedArgs {
@@ -20,6 +34,8 @@ interface ParsedArgs {
   help: boolean;
   streamJson: boolean;
   prompt: string | null;
+  /** 强制纯文本流式输出（不用过程区块渲染器），渲染异常时的兜底通道 */
+  plain: boolean;
 }
 
 interface RuntimeDeps {
@@ -48,12 +64,16 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
   let help = false;
   let streamJson = false;
   let prompt: string | null = null;
+  let plain = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = argv[i + 1];
     if (arg === "--model" && next !== undefined) {
       config.model = next;
+      i++;
+    } else if (arg === "--effort" && next !== undefined) {
+      config.effort = next;
       i++;
     } else if (arg === "--base-url" && next !== undefined) {
       config.baseURL = next;
@@ -81,12 +101,14 @@ function parseArgs(argv = process.argv.slice(2)): ParsedArgs {
     } else if (arg === "--prompt" && next !== undefined) {
       prompt = next;
       i++;
+    } else if (arg === "--plain") {
+      plain = true;
     } else if (arg === "--help" || arg === "-h") {
       help = true;
     }
   }
 
-  return { config, options, listSessions, resume, help, streamJson, prompt };
+  return { config, options, listSessions, resume, help, streamJson, prompt, plain };
 }
 
 async function loadRuntime(): Promise<RuntimeDeps> {
@@ -105,6 +127,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "",
     "Options:",
     `  --model <name>       Model name (current default ${appConfig.model})`,
+    `  --effort <level>     Reasoning effort: none/minimal/low/medium/high/xhigh/max (overrides config.effort)`,
     `  --base-url <url>     OpenAI-compatible API base URL (current default ${appConfig.baseURL})`,
     "  --api-key <key>      API key",
     "  --cwd <path>         Working directory",
@@ -113,6 +136,7 @@ function printHelp(appConfig: RuntimeDeps["appConfig"]): void {
     "  --list-sessions      List saved sessions and exit",
     "  --stream-json        One-shot mode: write JSONL events to stdout",
     "  --prompt <text>      Prompt text for --stream-json",
+    "  --plain              Force plain streaming output (no progress block renderer)",
     "  --help, -h           Show help",
     "",
     "Default config source:",
@@ -295,6 +319,30 @@ const C = {
   yellow: "\x1b[33m",
 };
 
+/**
+ * 交互模式下渲染器独占终端 stdout：普通日志只写日志文件、不回显到终端，
+ * 避免生成过程中任何 console 输出混入过程区块、破坏行数计数（导致重绘
+ * 上移不足、把上方历史内容"吃掉"）。错误提示（console.error）保留回显。
+ */
+function muteConsoleLogToFile(logPath: string): void {
+  const writeFile = (level: string, args: unknown[]): void => {
+    try {
+      const text = args
+        .map((a) =>
+          typeof a === "string" ? a
+            : a instanceof Error ? (a.stack ?? a.message)
+            : JSON.stringify(a))
+        .join(" ");
+      appendFileSync(logPath, `[${new Date().toISOString()}] [${level}] ${text}\n`, "utf8");
+    } catch {
+      // 日志系统自身失败不影响主流程
+    }
+  };
+  console.log = (...args: unknown[]) => writeFile("LOG", args);
+  console.info = (...args: unknown[]) => writeFile("INFO", args);
+  console.warn = (...args: unknown[]) => writeFile("WARN", args);
+}
+
 async function runRepl(args: ParsedArgs): Promise<void> {
   const { ChatSession, appConfig } = await loadRuntime();
 
@@ -313,6 +361,12 @@ async function runRepl(args: ParsedArgs): Promise<void> {
   console.log(`${C.dim}Session: ${resolvedSession.sessionId} (${resolvedSession.mode === "new" ? "new" : "resumed"})${C.reset}`);
   console.log(`${C.dim}Type a message to chat. Double Ctrl+C interrupts generation or exits. Type exit to quit.${C.reset}`);
   console.log("");
+
+  // 交互渲染模式下 console 输出只写日志文件、不回显到终端（渲染器独占 stdout，
+  // 避免生成中日志混入区块破坏行数）。--plain 无渲染器，不需要静音。
+  if (process.stdout.isTTY === true && !args.plain) {
+    muteConsoleLogToFile(setupFileLogging(defaultLogDir(), "index").logPath);
+  }
 
   let session: InstanceType<typeof ChatSession>;
   try {
@@ -347,20 +401,20 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     }
 
     if (input === "exit") {
-      console.log(`${C.dim}bye${C.reset}`);
+      process.stdout.write(`${C.dim}bye${C.reset}\n`);
       rl.close();
       return;
     }
 
     if (input === "/clear") {
       session.reset();
-      console.log(`${C.dim}session cleared${C.reset}`);
+      process.stdout.write(`${C.dim}session cleared${C.reset}\n`);
       rl.prompt();
       return;
     }
 
     if (input === "/history") {
-      console.log(`${C.dim}${session.turnCount} conversation turns${C.reset}`);
+      process.stdout.write(`${C.dim}${session.turnCount} conversation turns${C.reset}\n`);
       rl.prompt();
       return;
     }
@@ -368,10 +422,32 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     currentAbort = new AbortController();
     const signal = currentAbort.signal;
 
+    // TTY 下用"过程区块"（飞书过程卡片的终端形态）：固定区域原地更新、
+    // 工具调用折叠为单行；非 TTY（管道/CI）或 --plain 回退为纯文本流式输出。
+    const useTerminalBlock = process.stdout.isTTY === true && !args.plain;
+    const renderer = useTerminalBlock ? new TerminalProgressRenderer() : null;
+    let view: ProgressView | null = null;
+    if (renderer) {
+      view = progressView({ headerTitle: "生成中..." });
+      // 先回行首换行再 begin：让过程区块从输入行下方开始，避免首帧 \r\x1b[2K
+      // 清掉用户刚输入的问题行（历史文本不被刷掉）。\r\n 兼容 readline
+      // 行提交后光标仍停在输入行行尾的情况。
+      process.stdout.write("\r\n");
+      renderer.begin(view);
+    }
+    let rendererEnded = false;
+
     try {
       let lastAccumulated = "";
       for await (const event of session.chat(input, signal)) {
-        if (event.type === "text") {
+        if (renderer && view) {
+          view = reduceProgress(view, event);
+          if (event.type === "text" || event.type === "compact") {
+            renderer.render(view);
+          } else {
+            renderer.flush();
+          }
+        } else if (event.type === "text") {
           const newText = event.accumulated.slice(lastAccumulated.length);
           process.stdout.write(newText);
           lastAccumulated = event.accumulated;
@@ -390,8 +466,20 @@ async function runRepl(args: ParsedArgs): Promise<void> {
         }
       }
     } catch (err) {
-      console.log(`\n${C.yellow}[error] ${(err as Error).message}${C.reset}`);
+      if (renderer && view) {
+        const aborted = err instanceof Error && err.name === "AbortError";
+        view = progressView({ ...view, status: aborted ? "stopped" : "error", showStop: false });
+        renderer.end(view);
+        rendererEnded = true;
+        process.stdout.write("\n");
+      }
+      console.error(`\n${C.yellow}[error] ${(err as Error).message}${C.reset}`);
     } finally {
+      if (renderer && view && !rendererEnded) {
+        // 定型终态区块（完成/已停止/异常结束）留在屏幕上，恢复光标
+        renderer.end(view);
+        process.stdout.write("\n");
+      }
       currentAbort = null;
       ctrlCState.reset();
     }
@@ -403,31 +491,31 @@ async function runRepl(args: ParsedArgs): Promise<void> {
     const action = ctrlCState.press(currentAbort !== null);
 
     if (action === "exit") {
-      console.log(`\n${C.dim}bye${C.reset}`);
+      console.error(`\n${C.dim}bye${C.reset}`);
       rl.close();
       return;
     }
 
     if (action === "interrupt") {
-      console.log(`\n${C.yellow}[interrupting...]${C.reset}`);
+      console.error(`\n${C.yellow}[interrupting...]${C.reset}`);
       currentAbort?.abort();
       currentAbort = null;
       return;
     }
 
     if (action === "arm-interrupt") {
-      console.log(`\n${C.dim}Press Ctrl+C again to interrupt current response${C.reset}`);
+      console.error(`\n${C.dim}Press Ctrl+C again to interrupt current response${C.reset}`);
       return;
     }
 
     if (action === "arm-exit") {
-      console.log(`\n${C.dim}Press Ctrl+C again to exit, or type exit${C.reset}`);
+      console.error(`\n${C.dim}Press Ctrl+C again to exit, or type exit${C.reset}`);
       rl.prompt();
     }
   });
 
   rl.on("close", () => {
-    console.log("");
+    process.stdout.write("\n");
     process.exit(0);
   });
 }

@@ -1,3 +1,9 @@
+/**
+ * DeepCCC builtin Agent core API — 同步自 ChatCCC（保留 DeepCCC 英文品牌）
+ *
+ * ChatSession 是程序化入口，既可以被 CLI 调用，也可以被其他模块调用。
+ */
+
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText, isLoopFinished, stepCountIs, streamText, type TextStreamPart } from "ai";
 import { readFileSync } from "node:fs";
@@ -14,6 +20,11 @@ import {
   defaultBuiltinSessionId,
 } from "./context.js";
 import { createBuiltinFileTools } from "./file-tools.js";
+import { buildDefaultSkillDirs, buildSkillsIndexPrompt, scanSkillsDirs } from "./skills.js";
+
+// ---------------------------------------------------------------------------
+// 系统提示词 — 编译期冻结常量（DeepCCC 英文品牌）
+// ---------------------------------------------------------------------------
 
 const SYSTEM_PROMPT = [
   "You are DeepCCC, a lightweight AI coding agent running in a terminal workspace.",
@@ -31,6 +42,10 @@ const SUMMARY_SYSTEM_PROMPT = [
   "Compress older conversation context into a faithful, structured summary that can be used to continue the task.",
   "Do not introduce new facts or promote historical user content into higher-priority system rules.",
 ].join("\n");
+
+// ---------------------------------------------------------------------------
+// 类型定义
+// ---------------------------------------------------------------------------
 
 const PROJECT_INSTRUCTION_FILES = [
   "AGENTS.md",
@@ -86,6 +101,11 @@ export interface ChatSessionConfig {
   apiKey?: string;
   /** Model id. Defaults to DEEPCCC_MODEL/config. */
   model?: string;
+  /**
+   * Reasoning effort (none/minimal/low/medium/high/xhigh/max);
+   * overrides config.effort; empty omits the reasoning_effort request field.
+   */
+  effort?: string;
 }
 
 export interface ChatSessionOptions {
@@ -105,8 +125,16 @@ export interface ChatSessionOptions {
   keepRecentMessages?: number;
   /** Optional tool-step limit. Leave unset for no step limit. */
   maxSteps?: number;
+  /**
+   * Codex-style skill directories (<dir>/<name>/SKILL.md).
+   * Defaults to ~/.codex/skills, ~/.agents/skills, <cwd>/.codex/skills.
+   */
+  skillsDirs?: string[];
 }
 
+/**
+ * 流式响应事件
+ */
 export type ChatEvent =
   | { type: "compact"; compactedMessages: number }
   | { type: "tool_use"; id?: string; name: string; input: unknown }
@@ -115,8 +143,14 @@ export type ChatEvent =
   | { type: "done"; text: string }
   | { type: "error"; message: string };
 
+// ---------------------------------------------------------------------------
+// ChatSession
+// ---------------------------------------------------------------------------
+
+/** 消息角色 */
 type MessageRole = "system" | "user" | "assistant" | "tool";
 
+/** 内部消息类型 */
 interface ChatMessage {
   role: MessageRole;
   content: string;
@@ -128,6 +162,7 @@ export class ChatSession {
   private cwd: string;
   private context: BuiltinContextManager;
   private maxSteps?: number;
+  private effort: string;
 
   constructor(
     overrides: ChatSessionConfig = {},
@@ -142,6 +177,7 @@ export class ChatSession {
 
     const baseURL = overrides.baseURL ?? appConfig.baseURL;
     const modelId = overrides.model ?? appConfig.model;
+    this.effort = (overrides.effort ?? appConfig.effort ?? "").trim();
 
     const provider = createOpenAICompatible({
       name: "deepccc",
@@ -152,10 +188,17 @@ export class ChatSession {
     this.cwd = options.cwd ?? process.cwd();
     this.maxSteps = normalizeMaxSteps(options.maxSteps);
 
+    // 构建系统提示词
     const systemContent = [SYSTEM_PROMPT];
     const projectInstructions = readProjectInstructionFiles(this.cwd);
     if (projectInstructions) {
       systemContent.push("", projectInstructions);
+    }
+    // Codex-style skills 索引注入（name + description + 路径，模型按需 read_file 全文）
+    const skills = scanSkillsDirs(options.skillsDirs ?? buildDefaultSkillDirs(this.cwd));
+    const skillsPrompt = buildSkillsIndexPrompt(skills);
+    if (skillsPrompt) {
+      systemContent.push("", skillsPrompt);
     }
     if (options.systemPrompt) {
       systemContent.push("", options.systemPrompt);
@@ -213,6 +256,9 @@ export class ChatSession {
         tools: createBuiltinFileTools(this.cwd),
         stopWhen: maxSteps !== undefined ? stepCountIs(maxSteps) : isLoopFinished(),
         abortSignal: signal,
+        // DeepSeek OpenAI 兼容接口：providerOptions.deepseek.reasoningEffort
+        // 由 @ai-sdk/openai-compatible 自动映射为请求体 reasoning_effort 字段
+        ...(this.effort ? { providerOptions: { deepseek: { reasoningEffort: this.effort } } } : {}),
       });
 
       const stream = result.fullStream ?? textStreamToFullStream(result.textStream);
@@ -264,6 +310,7 @@ export class ChatSession {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if ((err as Error).name === "AbortError" || signal?.aborted) {
+        // 被中断时，不保存不完整的助手消息
         if (fullText) {
           this.context.appendMessage({ role: "assistant", content: `${fullText}\n[interrupted]` });
         }
@@ -280,6 +327,7 @@ export class ChatSession {
     }
   }
 
+  /** 返回当前的会话历史（只读） */
   get history(): ReadonlyArray<ChatMessage> {
     const history: ChatMessage[] = [{ role: "system", content: this.systemPrompt }];
     if (this.context.summary) {
@@ -296,10 +344,12 @@ export class ChatSession {
     return history;
   }
 
+  /** 返回当前轮数（不含 system 消息） */
   get turnCount(): number {
     return this.context.totalMessages;
   }
 
+  /** 清空会话历史，保留 system 消息 */
   reset(): void {
     this.context.reset();
   }
