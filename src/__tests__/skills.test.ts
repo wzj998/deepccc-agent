@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  normalizeSkillPathForPrompt,
   parseSkillFrontmatter,
   scanSkillsDirs,
   buildDefaultSkillDirs,
@@ -211,6 +212,21 @@ describe("buildDefaultSkillDirs", () => {
   });
 });
 
+describe("normalizeSkillPathForPrompt", () => {
+  it("abbreviates home-directory paths with ~ and normalizes separators", () => {
+    const home = homedir();
+    const abs = join(home, ".codex", "skills", "x", "SKILL.md");
+    expect(normalizeSkillPathForPrompt(abs)).toBe("~/.codex/skills/x/SKILL.md");
+    expect(normalizeSkillPathForPrompt(home)).toBe("~");
+  });
+
+  it("keeps paths outside the home directory unchanged (separators normalized)", () => {
+    expect(normalizeSkillPathForPrompt("C:\\proj\\.claude\\skills\\x\\SKILL.md")).toBe(
+      "C:/proj/.claude/skills/x/SKILL.md",
+    );
+  });
+});
+
 describe("buildSkillsIndexPrompt", () => {
   it("renders index with source markers and the skill creation convention", () => {
     const prompt = buildSkillsIndexPrompt([
@@ -229,6 +245,22 @@ describe("buildSkillsIndexPrompt", () => {
     expect(prompt).toContain("## Creating Skills");
     expect(prompt).toContain(".deepccc/skills");
     expect(prompt).toContain("read_file");
+  });
+
+  it("renders home-abbreviated skill paths so the prompt stays stable across machines", () => {
+    const home = homedir();
+    const prompt = buildSkillsIndexPrompt([
+      {
+        name: "demo",
+        description: "d",
+        skillPath: join(home, ".codex", "skills", "demo", "SKILL.md"),
+        source: "codex",
+        scope: "global",
+      },
+    ]);
+
+    expect(prompt).toContain("~/.codex/skills/demo/SKILL.md");
+    expect(prompt).not.toContain(home);
   });
 
   it("returns empty string for no skills", () => {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { config } from "../config.js";
+import { estimateBuiltinContextTokens } from "../context.js";
 
 const streamTextMock = vi.fn();
 const generateTextMock = vi.fn();
@@ -87,6 +88,40 @@ describe("ChatSession context management", () => {
     expect(system.indexOf("agents local guidance")).toBeLessThan(system.indexOf("claude root guidance"));
     expect(system.indexOf("claude root guidance")).toBeLessThan(system.indexOf("claude local guidance"));
     expect(system.indexOf("claude local guidance")).toBeLessThan(system.indexOf(dir));
+  });
+
+  it("places the volatile skills index at the very end of system prompt", async () => {
+    const { ChatSession } = await import("../index.js");
+    const dir = await mkdtemp(join(tmpdir(), "deepccc-session-skill-order-"));
+    const skillsDir = join(dir, "skills");
+    await mkdir(join(skillsDir, "demo-skill"), { recursive: true });
+    await writeFile(
+      join(skillsDir, "demo-skill", "SKILL.md"),
+      "---\nname: demo-skill\ndescription: demo description\n---\n\nbody\n",
+      "utf-8",
+    );
+    streamTextMock.mockReturnValueOnce({ textStream: textStream("ok") });
+
+    const session = new ChatSession(
+      { apiKey: "sk-test" },
+      {
+        cwd: dir,
+        sessionId: "skill-order",
+        systemPrompt: "CUSTOM PROMPT MARKER",
+        skillsDirs: [skillsDir],
+      },
+    );
+    await collect(session.chat("hi"));
+
+    const system = streamTextMock.mock.calls.at(-1)?.[0].system as string;
+    expect(system).toContain("demo-skill");
+    expect(system).toContain("CUSTOM PROMPT MARKER");
+    expect(system).toContain("Current working directory");
+    // 稳定性排序：固定规则 → 项目指令 → runtime → custom → 技能索引（最后）
+    expect(system.indexOf("CUSTOM PROMPT MARKER")).toBeGreaterThan(
+      system.indexOf("Current working directory"),
+    );
+    expect(system.indexOf("demo-skill")).toBeGreaterThan(system.indexOf("CUSTOM PROMPT MARKER"));
   });
 
   it("does not read project instruction files from parent directories", async () => {
@@ -181,6 +216,7 @@ describe("ChatSession context management", () => {
     const events = await collect(restored.chat("new question"));
 
     expect(generateTextMock).toHaveBeenCalledOnce();
+    expect(generateTextMock).toHaveBeenCalledWith(expect.objectContaining({ temperature: 0 }));
     expect(streamTextMock).toHaveBeenLastCalledWith(expect.objectContaining({
       messages: expect.arrayContaining([
         expect.objectContaining({ content: expect.stringContaining("old question summarized") }),
@@ -273,5 +309,21 @@ describe("ChatSession context management", () => {
     expect(rawLogWriteLineMock).toHaveBeenNthCalledWith(1, JSON.stringify(textPart));
     expect(rawLogWriteLineMock).toHaveBeenNthCalledWith(2, JSON.stringify(toolPart));
     expect(rawLogCloseMock).toHaveBeenCalledWith({ keep: true });
+  });
+});
+
+describe("estimateBuiltinContextTokens", () => {
+  it("weights CJK characters closer to one token per character", () => {
+    const messages = [{ role: "user" as const, content: "你好".repeat(100) }];
+    const estimate = estimateBuiltinContextTokens("", messages);
+    // 200 个汉字 ≈ 200 tokens（旧算法 chars/3 只估到 ~70，明显低估）
+    expect(estimate).toBeGreaterThanOrEqual(180);
+  });
+
+  it("keeps latin text near chars/3.5", () => {
+    const messages = [{ role: "user" as const, content: "a".repeat(1000) }];
+    const estimate = estimateBuiltinContextTokens("", messages);
+    expect(estimate).toBeGreaterThan(250);
+    expect(estimate).toBeLessThan(340);
   });
 });

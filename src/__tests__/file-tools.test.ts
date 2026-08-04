@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -12,6 +12,7 @@ import {
   createFileForTool,
   deleteFileForTool,
   editFileForTool,
+  expandHomePath,
   listDirForTool,
   moveFileForTool,
   readFileForTool,
@@ -27,6 +28,21 @@ async function makeTempDir(): Promise<string> {
   tempDirs.push(dir);
   return dir;
 }
+
+describe("expandHomePath", () => {
+  it("expands ~ and ~/ (both separators) to the user home directory", () => {
+    const home = homedir();
+    expect(expandHomePath("~")).toBe(home);
+    expect(expandHomePath("~/x/y.txt")).toBe(join(home, "x", "y.txt"));
+    expect(expandHomePath("~\\x\\y.txt")).toBe(join(home, "x", "y.txt"));
+  });
+
+  it("leaves absolute paths and other inputs unchanged", () => {
+    expect(expandHomePath("C:/a/b")).toBe("C:/a/b");
+    expect(expandHomePath("~other/x")).toBe("~other/x");
+    expect(expandHomePath("")).toBe("");
+  });
+});
 
 async function hasRg(): Promise<boolean> {
   try {
