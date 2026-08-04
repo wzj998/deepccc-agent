@@ -31,6 +31,14 @@ node bin/deepccc.mjs --help
 - Node.js >= 20
 - DeepSeek 或其他 OpenAI-compatible 模型服务的 API Key
 
+## 缓存命中率
+
+deepccc 的本地缓存优化实测命中率 **96.7%**，有效降低重复请求开销，让响应更快、更省成本。
+
+![缓存命中率 1](docs/cache-hit-rate-1.jpg)
+
+![缓存命中率 2](docs/cache-hit-rate-2.jpg)
+
 ## 配置
 
 最快的方式是使用环境变量：
