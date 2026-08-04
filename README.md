@@ -180,7 +180,9 @@ deepccc --dangerously-bypass-permissions
 
 ## 终端过程区块
 
-交互模式下，每轮回复渲染为固定"过程区块"：状态行（生成中/完成/已停止/异常结束）+ 折叠工具行 + 原地更新正文，不滚屏刷 JSON。生成中有心跳点号动画；完成/停止/异常后区块定型留在屏幕上。
+交互模式下，每轮回复渲染为固定"过程区块"：状态行（压缩上下文中/生成回复中/完成/已停止/异常结束）+ 折叠工具行 + 原地更新正文，不滚屏刷 JSON。活动状态有心跳点号动画；完成/停止/异常后区块定型留在屏幕上。
+
+持久化上下文达到 token 阈值时，deepccc 会先按 token 预算保留最近消息，再压缩较早内容；超长历史消息、工具记录和压缩输入会被限长，避免单次摘要请求反复吞入巨量文本。一次压缩最多等待 5 分钟，超时或摘要失败会给出明确错误，不会自动重放用户请求。
 
 如果终端渲染出现异常，可以强制回退为纯文本流式输出：
 
@@ -206,6 +208,9 @@ echo "运行测试并解释失败原因" | deepccc --stream-json
 
 ```jsonl
 {"type":"start","session_id":"session-...","mode":"new","cwd":"/repo","model":"deepseek-v4-pro"}
+{"type":"status","phase":"compacting"}
+{"type":"compact","compactedMessages":12}
+{"type":"status","phase":"generating"}
 {"type":"text_delta","text":"...","accumulated":"..."}
 {"type":"tool_call","id":"call_...","name":"read_file","input":{"path":"package.json"}}
 {"type":"tool_result","tool_call_id":"call_...","name":"read_file","content":{},"is_error":false}
