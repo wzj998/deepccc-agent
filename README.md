@@ -251,13 +251,29 @@ ChatCCC 是一个把 Claude Code / Codex / Cursor / CCC Agent 聚合到飞书/�
 
 这些内容会放在固定系统提示词之后，作为项目指导使用。
 
-## Codex-style Skills 支持
+## Skills 自动加载
 
-`deepccc` 会扫描以下目录，把本机的 Codex 目录式 skill（`<name>/SKILL.md`，含 `name` + `description` frontmatter）索引注入系统提示词；模型在任务匹配时先用 `read_file` 读取 `SKILL.md` 全文再执行：
+`deepccc` 会并行扫描本机 **Claude / Codex / Cursor / DeepCCC** 四套生态的目录式 skill（`<name>/SKILL.md`，含 `name` + `description` frontmatter），把索引注入系统提示词；模型在任务匹配时先用 `read_file` 读取 `SKILL.md` 全文再执行。
 
-- `~/.codex/skills`
-- `~/.agents/skills`
-- `<cwd>/.codex/skills`（项目级，优先级最高）
+自动加载的目录（按优先级从低到高排列，扫描时后者覆盖前者）：
+
+| 目录 | 来源 | 级别 |
+| --- | --- | --- |
+| `~/.claude/skills` | claude | 用户级 |
+| `<cwd>/.claude/skills` | claude | 项目级 |
+| `~/.cursor/skills` | cursor | 用户级 |
+| `<cwd>/.cursor/skills` | cursor | 项目级 |
+| `~/.codex/skills` | codex | 用户级 |
+| `~/.agents/skills` | codex | 用户级（标准全局目录） |
+| `<cwd>/.codex/skills` | codex | 项目级 |
+| `~/.deepccc/skills` | deepccc | 用户级 |
+| `<cwd>/.deepccc/skills` | deepccc | 项目级 |
+
+**同名去重优先级（高 → 低）：`deepccc` > `codex` > `cursor` > `claude`**；同一来源内：**项目级（project）> 用户级（global）**。扫描时低优先级先入索引、高优先级同名覆盖，天然实现优先级。
+
+扫描带 mtime 热加载缓存：SKILL.md 内容变化自动重读，新技能目录每次扫描立即被发现——因此"创建技能 → 下一次对话自动生效"，无需重启。
+
+需要新建技能时，创建为 Codex 结构：`~/.deepccc/skills/<name>/SKILL.md`（默认，全局）或 `<cwd>/.deepccc/skills/<name>/SKILL.md`（`--scope project`，仅当用户明确要求项目级时）。
 
 ## 内置工具
 
