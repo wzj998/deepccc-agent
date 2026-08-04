@@ -285,6 +285,8 @@ ChatCCC 是一个把 Claude Code / Codex / Cursor / CCC Agent 聚合到飞书/�
 - 编辑、创建、删除、移动文件
 - 应用 unified diff patch
 - 运行非交互式 shell 命令，并返回 stdout、stderr、exitCode 和超时状态
+- 联网搜索（`websearch`：DuckDuckGo，免 API key，返回标题 + URL + 摘要）
+- 抓取网页并转纯文本（`webfetch`：仅 http/https，自动去 HTML 标签、控制长度与超时）
 
 命令返回非零退出码时不会直接被当成工具异常；模型可以读取结构化结果，继续判断下一步。
 
