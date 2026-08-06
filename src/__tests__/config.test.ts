@@ -1,0 +1,26 @@
+import { afterEach, describe, expect, it } from "vitest";
+
+import { ChatSession } from "../index.js";
+import { config } from "../config.js";
+
+const originalDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
+const originalDeepCccApiKey = config.apiKey;
+
+afterEach(() => {
+  if (originalDeepSeekApiKey === undefined) {
+    delete process.env.DEEPSEEK_API_KEY;
+  } else {
+    process.env.DEEPSEEK_API_KEY = originalDeepSeekApiKey;
+  }
+  config.apiKey = originalDeepCccApiKey;
+});
+
+describe("builtin ChatSession config", () => {
+  it("uses the builtin ~/.deepccc config when no apiKey is passed", () => {
+    expect(() => new ChatSession()).not.toThrow();
+  });
+
+  it("allows constructor parameters to override config defaults", () => {
+    expect(() => new ChatSession({ apiKey: "sk-test" })).not.toThrow();
+  });
+});

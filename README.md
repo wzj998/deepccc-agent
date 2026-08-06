@@ -219,7 +219,7 @@ echo "运行测试并解释失败原因" | deepccc --stream-json
 
 ## 在 ChatCCC 中使用
 
-**ChatCCC 已内置 deepccc**：ChatCCC 的 "CCC Agent" 工具直接内嵌 deepccc 的代码（`src/builtin/`），以 `permissionMode: "bypass"` 全自动运行，无需单独安装或配置本仓库。
+**ChatCCC 已内置 deepccc**：ChatCCC 的 "CCC Agent" 工具直接内嵌 deepccc 的代码（仓库内 `deepccc-agent/` 子目录），以 `permissionMode: "bypass"` 全自动运行，无需单独安装或配置本仓库。
 
 ChatCCC 是一个把 Claude Code / Codex / Cursor / CCC Agent 聚合到飞书/企微等 IM 消息通道的本地机器人框架，提供会话管理、过程卡片、用量统计与隐私替换等能力。
 
@@ -234,7 +234,7 @@ ChatCCC 是一个把 Claude Code / Codex / Cursor / CCC Agent 聚合到飞书/�
 
 这种方式适合已经在 ChatCCC 里协作的场景：ChatCCC 负责会话入口和消息通道，`deepccc` 负责本地编程 Agent 能力，包括读取项目提示词、运行命令、编辑文件和输出流式结果。
 
-如果希望让 ChatCCC 使用本仓库（deepccc-agent）最新的独立版本能力，也可以把 `src/builtin/` 与本仓库 `src/` 同步后构建。
+deepccc 的内核主战场在 ChatCCC 仓库的 `deepccc-agent/` 子目录；本仓库（deepccc-agent）是发布镜像，由 ChatCCC 仓库的 `sync-deepccc.mjs` 目录级同步（多的删、少的补、不同的改），之后 `npm run build && npm publish` 发布独立 `deepccc` 包。
 
 ## 项目提示词自动注入
 
